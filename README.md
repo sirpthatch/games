@@ -7,20 +7,6 @@ for fun (as defined by a 4 year old).
 
 ---
 
-## Asteroids
-
-A faithful re-creation of the arcade classic. Pilot your ship through an
-ever-thickening asteroid field, blasting rocks apart before they collide with
-you. Asteroids split into smaller, faster fragments when hit, and each new
-level throws more of them at you. Use hyperspace when things get desperate —
-just don't count on landing somewhere safe.
-
-**Controls:** Arrow keys / WASD to move · Space to fire · Shift to hyperspace
-
-![Asteroids](screenshots/asteroids.png)
-
----
-
 ## Climbing Gym
 
 A platform game set inside a colorful climbing gym (think Hapik in Industry
