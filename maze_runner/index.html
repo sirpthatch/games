@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Field Hunter</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    background: linear-gradient(180deg, #7ec8f5 0%, #a8dcff 30%, #c8e8a0 60%, #8fc870 100%);
+    overflow: hidden;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+  }
+  h1 {
+    margin: 6px 0 2px 0;
+    color: #2d5016;
+    text-shadow: 2px 2px 0 #f7e9a0;
+    letter-spacing: 2px;
+    font-size: 28px;
+  }
+  #hud {
+    color: #2d5016;
+    font-size: 16px;
+    font-weight: bold;
+    margin: 6px 0;
+    background: rgba(255,255,255,0.55);
+    padding: 6px 16px;
+    border-radius: 20px;
+    border: 2px solid #2d5016;
+  }
+  #hud span { color: #c0392b; }
+  #wrap {
+    position: relative;
+  }
+  canvas {
+    border: 5px solid #2d5016;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+    display: block;
+    image-rendering: pixelated;
+  }
+  #overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.45);
+    color: white;
+    border-radius: 4px;
+    text-align: center;
+    padding: 20px;
+    box-sizing: border-box;
+  }
+  #overlay.hidden { display: none; }
+  #overlay h2 {
+    margin: 0 0 10px 0;
+    font-size: 32px;
+    text-shadow: 2px 2px 0 #2d5016;
+  }
+  #overlay p { margin: 6px 0; font-size: 16px; }
+  #overlay button {
+    margin-top: 14px;
+    background: #f7d046;
+    color: #2d5016;
+    border: 3px solid #2d5016;
+    padding: 10px 22px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 18px;
+    font-weight: bold;
+    letter-spacing: 1px;
+  }
+  #overlay button:hover { background: #ffe066; }
+  #footer {
+    color: #2d5016;
+    font-size: 12px;
+    margin-top: 6px;
+    opacity: 0.75;
+  }
+</style>
+</head>
+<body>
+  <h1>🌾 FIELD HUNTER 🌾</h1>
+  <div id="hud">
+    Level: <span id="level">1</span>
+    &nbsp;|&nbsp; Bugs Left: <span id="bugs">0</span>
+    &nbsp;|&nbsp; Lives: <span id="lives">❤❤❤</span>
+  </div>
+  <div id="wrap">
+    <canvas id="game" width="600" height="440"></canvas>
+    <div id="overlay">
+      <h2 id="overlayTitle">Field Hunter</h2>
+      <p id="overlayText">Arrow keys or WASD to move.<br>Catch every beetle to clear the field!<br>Watch out — a beetle that walks into you bites!</p>
+      <button id="overlayBtn">START</button>
+    </div>
+  </div>
+  <div id="footer">Arrow keys / WASD &nbsp;·&nbsp; P to pause &nbsp;·&nbsp; R to restart level</div>
+
+<script>
+(() => {
+  const TILE = 40;
+  const COLS = 15;
+  const ROWS = 11;
+  const PLAYER_MOVE_MS = 130;
+  const ENEMY_BASE_MOVE_MS = 650;
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+
+  const levelEl = document.getElementById('level');
+  const bugsEl  = document.getElementById('bugs');
+  const livesEl = document.getElementById('lives');
+  const overlay = document.getElementById('overlay');
+  const overlayTitle = document.getElementById('overlayTitle');
+  const overlayText  = document.getElementById('overlayText');
+  const overlayBtn   = document.getElementById('overlayBtn');
+
+  // Levels: # = hedge, . = grass, P = player start, E = enemy
+  const LEVELS = [
+    [
+      "###############",
+      "#P............#",
+      "#.#.#######.#.#",
+      "#.#.........#.#",
+      "#.#.#####.#.#.#",
+      "#.#.......#.#.#",
+      "#.#.#####.#.#.#",
+      "#.#.........#.#",
+      "#.#.#######.#.#",
+      "#............E#",
+      "###############"
+    ],
+    [
+      "###############",
+      "#P...........E#",
+      "#.###.###.###.#",
+      "#.#.....#.....#",
+      "#.#.###.#.###.#",
+      "#...#E....#...#",
+      "#.#.###.#.#.#.#",
+      "#.#.....#...#.#",
+      "#.###.#####.#.#",
+      "#E.....E.....E#",
+      "###############"
+    ],
+    [
+      "###############",
+      "#P...#.....#..#",
+      "###.#.###.#.#.#",
+      "#...#...#...#E#",
+      "#.###.#.#.###.#",
+      "#.....#E#.....#",
+      "#.###.#.#.###.#",
+      "#E..#...#...#.#",
+      "#.#.###.###.#.#",
+      "#.#........E..#",
+      "###############"
+    ],
+    [
+      "###############",
+      "#P.#...E.#...E#",
+      "#..#.###.#.##.#",
+      "##.....#......#",
+      "#.####.#.####.#",
+      "#E.#...#...#.E#",
+      "#.####.#.####.#",
+      "#......#......#",
+      "#.##.#.#.#.##.#",
+      "#.E..#...#..E.#",
+      "###############"
+    ]
+  ];
+
+  // Game state
+  let state;
+
+  function newState() {
+    return {
+      levelIdx: 0,
+      lives: 3,
+      grid: [],
+      decor: [], // flowers/tufts positions per tile
+      hedgeShapes: [], // pre-baked hedge bumps so they don't flicker
+      player: null,
+      enemies: [],
+      particles: [],
+      paused: false,
+      gameOver: false,
+      cleared: false
+    };
+  }
+
+  function rng(seed) {
+    let s = seed | 0;
+    return () => {
+      s = (s * 9301 + 49297) % 233280;
+      return s / 233280;
+    };
+  }
+
+  function loadLevel(idx) {
+    state.levelIdx = idx;
+    state.cleared = false;
+    state.particles = [];
+    const map = LEVELS[idx];
+    state.grid = [];
+    state.enemies = [];
+    state.decor = [];
+    state.hedgeShapes = [];
+    const r = rng(idx * 1000 + 7);
+    for (let y = 0; y < ROWS; y++) {
+      const row = [];
+      const decorRow = [];
+      const hedgeRow = [];
+      for (let x = 0; x < COLS; x++) {
+        const ch = map[y][x];
+        if (ch === '#') {
+          row.push(1);
+          // pre-bake hedge bumps
+          const bumps = [];
+          for (let i = 0; i < 5; i++) {
+            bumps.push({
+              dx: r() * TILE,
+              dy: r() * TILE,
+              rad: 8 + r() * 6,
+              shade: r()
+            });
+          }
+          hedgeRow.push(bumps);
+          decorRow.push(null);
+        } else {
+          row.push(0);
+          hedgeRow.push(null);
+          // grass decor
+          const items = [];
+          const count = Math.floor(r() * 3);
+          for (let i = 0; i < count; i++) {
+            items.push({
+              dx: 4 + r() * (TILE - 8),
+              dy: 4 + r() * (TILE - 8),
+              type: r() < 0.25 ? 'flower' : 'tuft',
+              hue: r()
+            });
+          }
+          decorRow.push(items);
+
+          if (ch === 'P') {
+            state.player = makeActor(x, y);
+          } else if (ch === 'E') {
+            state.enemies.push(makeEnemy(x, y, idx));
+          }
+        }
+      }
+      state.grid.push(row);
+      state.decor.push(decorRow);
+      state.hedgeShapes.push(hedgeRow);
+    }
+    updateHUD();
+  }
+
+  function makeActor(x, y) {
+    return {
+      x, y,
+      px: x * TILE, py: y * TILE,
+      tx: x, ty: y,
+      moving: false,
+      moveStart: 0,
+      facing: 'down'
+    };
+  }
+
+  function makeEnemy(x, y, levelIdx) {
+    const a = makeActor(x, y);
+    a.moveTimer = 200 + Math.random() * 400;
+    a.interval = Math.max(380, ENEMY_BASE_MOVE_MS - levelIdx * 60);
+    a.wiggle = Math.random() * Math.PI * 2;
+    return a;
+  }
+
+  function isWalkable(x, y) {
+    if (x < 0 || y < 0 || x >= COLS || y >= ROWS) return false;
+    return state.grid[y][x] === 0;
+  }
+
+  function tryMovePlayer(dx, dy) {
+    const p = state.player;
+    if (p.moving) return;
+    const nx = p.x + dx, ny = p.y + dy;
+    if (!isWalkable(nx, ny)) return;
+    p.tx = nx; p.ty = ny;
+    p.moving = true;
+    p.moveStart = performance.now();
+    if (dx < 0) p.facing = 'left';
+    else if (dx > 0) p.facing = 'right';
+    else if (dy < 0) p.facing = 'up';
+    else p.facing = 'down';
+  }
+
+  function tickActor(actor, dur, now) {
+    if (!actor.moving) return false;
+    const t = (now - actor.moveStart) / dur;
+    if (t >= 1) {
+      actor.x = actor.tx; actor.y = actor.ty;
+      actor.px = actor.x * TILE; actor.py = actor.y * TILE;
+      actor.moving = false;
+      return true;
+    } else {
+      actor.px = (actor.x + (actor.tx - actor.x) * t) * TILE;
+      actor.py = (actor.y + (actor.ty - actor.y) * t) * TILE;
+      return false;
+    }
+  }
+
+  function spawnParticles(cx, cy, color, count) {
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = 60 + Math.random() * 120;
+      state.particles.push({
+        x: cx, y: cy,
+        vx: Math.cos(a) * s,
+        vy: Math.sin(a) * s - 40,
+        life: 0.6 + Math.random() * 0.3,
+        age: 0,
+        color,
+        size: 2 + Math.random() * 3
+      });
+    }
+  }
+
+  function updateParticles(dt) {
+    for (let i = state.particles.length - 1; i >= 0; i--) {
+      const p = state.particles[i];
+      p.age += dt;
+      if (p.age >= p.life) { state.particles.splice(i, 1); continue; }
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 220 * dt;
+    }
+  }
+
+  function catchEnemy(idx) {
+    const e = state.enemies[idx];
+    spawnParticles(e.px + TILE/2, e.py + TILE/2, '#fff176', 14);
+    spawnParticles(e.px + TILE/2, e.py + TILE/2, '#3e2723', 6);
+    state.enemies.splice(idx, 1);
+    updateHUD();
+    if (state.enemies.length === 0) {
+      state.cleared = true;
+      setTimeout(() => {
+        if (state.levelIdx + 1 < LEVELS.length) {
+          showOverlay(
+            `Level ${state.levelIdx + 1} Cleared!`,
+            `Great hunting!<br>Ready for level ${state.levelIdx + 2}?`,
+            'NEXT LEVEL',
+            () => { loadLevel(state.levelIdx + 1); hideOverlay(); }
+          );
+        } else {
+          showOverlay(
+            'You Cleared the Field! 🌻',
+            `Every beetle caught across all ${LEVELS.length} levels.<br>You're the Field Hunter champion!`,
+            'PLAY AGAIN',
+            () => { state = newState(); loadLevel(0); hideOverlay(); }
+          );
+        }
+      }, 600);
+    }
+  }
+
+  function hitPlayer() {
+    state.lives--;
+    spawnParticles(state.player.px + TILE/2, state.player.py + TILE/2, '#e53935', 18);
+    updateHUD();
+    if (state.lives <= 0) {
+      state.gameOver = true;
+      setTimeout(() => {
+        showOverlay(
+          'Game Over',
+          `The beetles got the better of you on level ${state.levelIdx + 1}.<br>Try again from the start?`,
+          'RESTART',
+          () => { state = newState(); loadLevel(0); hideOverlay(); }
+        );
+      }, 500);
+    } else {
+      // reset positions to start of current level (keep score/level)
+      const cur = state.levelIdx;
+      const oldLives = state.lives;
+      loadLevel(cur);
+      state.lives = oldLives;
+      updateHUD();
+    }
+  }
+
+  function update(dt, now) {
+    if (state.paused || state.gameOver || state.cleared) return;
+
+    // player movement
+    const finished = tickActor(state.player, PLAYER_MOVE_MS, now);
+    if (finished) {
+      // check if player walked onto an enemy → catch it
+      for (let i = state.enemies.length - 1; i >= 0; i--) {
+        const e = state.enemies[i];
+        if (!e.moving && e.x === state.player.x && e.y === state.player.y) {
+          catchEnemy(i);
+        }
+      }
+      // continue moving if direction is held
+      if (heldDir) {
+        tryMovePlayer(heldDir.dx, heldDir.dy);
+      }
+    }
+
+    // enemies
+    for (let i = state.enemies.length - 1; i >= 0; i--) {
+      const e = state.enemies[i];
+      e.wiggle += dt * 6;
+      const arrived = tickActor(e, e.interval * 0.55, now);
+      if (arrived) {
+        // if landed on player → player loses life
+        if (e.x === state.player.x && e.y === state.player.y) {
+          hitPlayer();
+          return;
+        }
+      }
+      if (!e.moving) {
+        e.moveTimer -= dt * 1000;
+        if (e.moveTimer <= 0) {
+          // pick a random valid direction; bias toward continuing same direction
+          const opts = [];
+          const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+          for (const [dx, dy] of dirs) {
+            if (isWalkable(e.x + dx, e.y + dy)) opts.push([dx, dy]);
+          }
+          if (opts.length) {
+            // small bias: chase player ~25% of the time when adjacent line of sight
+            let pick;
+            if (Math.random() < 0.25) {
+              // move toward player if path direction
+              const dx = Math.sign(state.player.x - e.x);
+              const dy = Math.sign(state.player.y - e.y);
+              const chase = opts.find(([a,b]) =>
+                (a === dx && a !== 0) || (b === dy && b !== 0));
+              pick = chase || opts[Math.floor(Math.random() * opts.length)];
+            } else {
+              pick = opts[Math.floor(Math.random() * opts.length)];
+            }
+            e.tx = e.x + pick[0];
+            e.ty = e.y + pick[1];
+            e.moving = true;
+            e.moveStart = now;
+            e.moveTimer = e.interval;
+          } else {
+            e.moveTimer = e.interval;
+          }
+        }
+      }
+    }
+
+    updateParticles(dt);
+  }
+
+  // === Rendering ===
+
+  function render() {
+    // grass background
+    drawGrass();
+    // hedges
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        if (state.grid[y][x] === 1) drawHedge(x, y);
+      }
+    }
+    // shadows under actors
+    for (const e of state.enemies) drawShadow(e.px, e.py);
+    drawShadow(state.player.px, state.player.py);
+    // enemies
+    for (const e of state.enemies) drawBeetle(e);
+    // player
+    drawPlayer(state.player);
+    // particles
+    for (const p of state.particles) drawParticle(p);
+  }
+
+  function drawGrass() {
+    // base
+    const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    grad.addColorStop(0, '#88c862');
+    grad.addColorStop(1, '#6eaa4a');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // tile decorations (flowers and tufts)
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        const items = state.decor[y][x];
+        if (!items) continue;
+        const ox = x * TILE, oy = y * TILE;
+        for (const it of items) {
+          if (it.type === 'flower') {
+            drawFlower(ox + it.dx, oy + it.dy, it.hue);
+          } else {
+            drawTuft(ox + it.dx, oy + it.dy, it.hue);
+          }
+        }
+      }
+    }
+  }
+
+  function drawTuft(x, y, hue) {
+    ctx.strokeStyle = hue < 0.5 ? '#4d8b30' : '#3e7227';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x - 2, y - 3);
+    ctx.moveTo(x, y);
+    ctx.lineTo(x, y - 4);
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + 2, y - 3);
+    ctx.stroke();
+  }
+
+  function drawFlower(x, y, hue) {
+    const colors = ['#f9d949', '#f06292', '#ce93d8', '#fff59d'];
+    const c = colors[Math.floor(hue * colors.length)];
+    // petals
+    ctx.fillStyle = c;
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.arc(x + Math.cos(a) * 2, y + Math.sin(a) * 2, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // center
+    ctx.fillStyle = '#f57f17';
+    ctx.beginPath();
+    ctx.arc(x, y, 1.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawHedge(x, y) {
+    const ox = x * TILE, oy = y * TILE;
+    // base
+    ctx.fillStyle = '#2d5e2a';
+    ctx.fillRect(ox, oy, TILE, TILE);
+    // bumps
+    const bumps = state.hedgeShapes[y][x];
+    for (const b of bumps) {
+      ctx.fillStyle = b.shade < 0.4 ? '#3d7a36' : (b.shade < 0.8 ? '#4a9243' : '#5fae57');
+      ctx.beginPath();
+      ctx.arc(ox + b.dx, oy + b.dy, b.rad, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // small berry highlights
+    for (const b of bumps) {
+      if (b.shade > 0.85) {
+        ctx.fillStyle = '#c0392b';
+        ctx.beginPath();
+        ctx.arc(ox + b.dx + 2, oy + b.dy - 2, 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  function drawShadow(px, py) {
+    ctx.fillStyle = 'rgba(0,0,0,0.22)';
+    ctx.beginPath();
+    ctx.ellipse(px + TILE/2, py + TILE - 6, 12, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawPlayer(p) {
+    const cx = p.px + TILE/2;
+    const cy = p.py + TILE/2;
+    // body (overalls)
+    ctx.fillStyle = '#1565c0';
+    ctx.beginPath();
+    ctx.arc(cx, cy + 4, 11, 0, Math.PI * 2);
+    ctx.fill();
+    // head
+    ctx.fillStyle = '#ffcc80';
+    ctx.beginPath();
+    ctx.arc(cx, cy - 5, 8, 0, Math.PI * 2);
+    ctx.fill();
+    // hat (straw)
+    ctx.fillStyle = '#d4a23a';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy - 9, 12, 3, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx, cy - 11, 5.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#b88528';
+    ctx.fillRect(cx - 5, cy - 11, 10, 1);
+    // eyes (look in facing direction)
+    const lookX = p.facing === 'left' ? -1.4 : (p.facing === 'right' ? 1.4 : 0);
+    const lookY = p.facing === 'up' ? -1.2 : (p.facing === 'down' ? 0.6 : 0);
+    ctx.fillStyle = '#222';
+    ctx.beginPath();
+    ctx.arc(cx - 2.5 + lookX, cy - 5 + lookY, 1.2, 0, Math.PI * 2);
+    ctx.arc(cx + 2.5 + lookX, cy - 5 + lookY, 1.2, 0, Math.PI * 2);
+    ctx.fill();
+    // little smile
+    ctx.strokeStyle = '#5d2f0c';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy - 3, 1.6, 0.1 * Math.PI, 0.9 * Math.PI);
+    ctx.stroke();
+    // net (held in front of player)
+    drawNet(cx, cy, p.facing);
+  }
+
+  function drawNet(cx, cy, facing) {
+    let nx = cx, ny = cy + 2;
+    if (facing === 'left')  nx = cx - 12;
+    if (facing === 'right') nx = cx + 12;
+    if (facing === 'up')    { nx = cx + 8; ny = cy - 8; }
+    if (facing === 'down')  { nx = cx - 8; ny = cy + 10; }
+    // handle
+    ctx.strokeStyle = '#8d4f1a';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(nx, ny);
+    ctx.stroke();
+    // hoop
+    ctx.strokeStyle = '#bdbdbd';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.arc(nx, ny, 4, 0, Math.PI * 2);
+    ctx.stroke();
+    // mesh
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.beginPath();
+    ctx.arc(nx, ny, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawBeetle(e) {
+    const cx = e.px + TILE/2;
+    const cy = e.py + TILE/2 + Math.sin(e.wiggle) * 0.6;
+    // legs
+    ctx.strokeStyle = '#1a0e0a';
+    ctx.lineWidth = 1.6;
+    for (let i = -1; i <= 1; i++) {
+      const yOff = i * 4;
+      ctx.beginPath();
+      ctx.moveTo(cx - 7, cy + yOff);
+      ctx.lineTo(cx - 12, cy + yOff + i * 2);
+      ctx.moveTo(cx + 7, cy + yOff);
+      ctx.lineTo(cx + 12, cy + yOff + i * 2);
+      ctx.stroke();
+    }
+    // body
+    ctx.fillStyle = '#3e2723';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, 10, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // shell shine
+    ctx.fillStyle = '#5d4037';
+    ctx.beginPath();
+    ctx.ellipse(cx - 2, cy - 2, 3, 2, -0.4, 0, Math.PI * 2);
+    ctx.fill();
+    // shell line
+    ctx.strokeStyle = '#1a0e0a';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - 7);
+    ctx.lineTo(cx, cy + 7);
+    ctx.stroke();
+    // head
+    ctx.fillStyle = '#2c1810';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy - 7, 4, 3, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // eyes
+    ctx.fillStyle = '#ef5350';
+    ctx.beginPath();
+    ctx.arc(cx - 1.6, cy - 7.5, 1, 0, Math.PI * 2);
+    ctx.arc(cx + 1.6, cy - 7.5, 1, 0, Math.PI * 2);
+    ctx.fill();
+    // antennae
+    ctx.strokeStyle = '#1a0e0a';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx - 1.5, cy - 9);
+    ctx.lineTo(cx - 4, cy - 12);
+    ctx.moveTo(cx + 1.5, cy - 9);
+    ctx.lineTo(cx + 4, cy - 12);
+    ctx.stroke();
+  }
+
+  function drawParticle(p) {
+    const a = 1 - p.age / p.life;
+    ctx.globalAlpha = Math.max(0, a);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // === HUD ===
+
+  function updateHUD() {
+    levelEl.textContent = state.levelIdx + 1;
+    bugsEl.textContent = state.enemies.length;
+    livesEl.textContent = '❤'.repeat(Math.max(0, state.lives)) || '—';
+  }
+
+  // === Overlay ===
+
+  function showOverlay(title, html, btnText, onClick) {
+    overlayTitle.textContent = title;
+    overlayText.innerHTML = html;
+    overlayBtn.textContent = btnText;
+    overlay.classList.remove('hidden');
+    overlayBtn.onclick = onClick;
+  }
+  function hideOverlay() { overlay.classList.add('hidden'); }
+
+  // === Input ===
+
+  const DIRS = {
+    ArrowUp:    { dx: 0, dy: -1 },
+    ArrowDown:  { dx: 0, dy:  1 },
+    ArrowLeft:  { dx: -1, dy: 0 },
+    ArrowRight: { dx: 1, dy:  0 },
+    KeyW: { dx: 0, dy: -1 },
+    KeyS: { dx: 0, dy:  1 },
+    KeyA: { dx: -1, dy: 0 },
+    KeyD: { dx: 1, dy:  0 }
+  };
+  let heldDir = null;
+
+  window.addEventListener('keydown', (e) => {
+    if (DIRS[e.code]) {
+      heldDir = DIRS[e.code];
+      tryMovePlayer(heldDir.dx, heldDir.dy);
+      e.preventDefault();
+      return;
+    }
+    if (e.code === 'KeyP') {
+      if (state.gameOver || state.cleared) return;
+      state.paused = !state.paused;
+      if (state.paused) {
+        showOverlay('Paused', 'Take a breather.', 'RESUME', () => {
+          state.paused = false; hideOverlay();
+        });
+      } else hideOverlay();
+    } else if (e.code === 'KeyR') {
+      if (state.gameOver) return;
+      const lives = state.lives;
+      loadLevel(state.levelIdx);
+      state.lives = lives;
+      updateHUD();
+      hideOverlay();
+      state.paused = false;
+    }
+  });
+  window.addEventListener('keyup', (e) => {
+    if (DIRS[e.code]) {
+      // only clear if same direction
+      const d = DIRS[e.code];
+      if (heldDir && heldDir.dx === d.dx && heldDir.dy === d.dy) {
+        heldDir = null;
+      }
+    }
+  });
+
+  // === Game loop ===
+
+  let lastTime = performance.now();
+  function loop(now) {
+    const dt = Math.min(0.05, (now - lastTime) / 1000);
+    lastTime = now;
+    update(dt, now);
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  // === Boot ===
+
+  function start() {
+    state = newState();
+    loadLevel(0);
+    hideOverlay();
+  }
+
+  state = newState();
+  loadLevel(0);
+  // initial title overlay
+  showOverlay(
+    '🌾 Field Hunter 🌾',
+    'You\'re a farmer with a net.<br>Catch every beetle in the hedge maze to clear the field.<br><br><b>Arrow keys / WASD</b> to move<br><b>P</b> pause &nbsp;·&nbsp; <b>R</b> restart level<br><br>Walk into a beetle to net it.<br>But if a beetle scuttles into <i>you</i>… ouch!',
+    'START',
+    () => { start(); }
+  );
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

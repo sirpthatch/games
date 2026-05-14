@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Big Wall — A Climbing Game</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%; background: #1a1410;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #f5e9d3; overflow: hidden;
+  }
+  #game { display: block; margin: 0 auto; background: #87a4b8; cursor: pointer; }
+  #hud {
+    position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.55); padding: 8px 16px; border-radius: 8px;
+    font-size: 14px; pointer-events: none; letter-spacing: 0.5px;
+  }
+  #msg {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    background: rgba(0,0,0,0.75); padding: 18px 28px; border-radius: 10px;
+    font-size: 22px; text-align: center; display: none;
+  }
+  #msg small { display: block; margin-top: 8px; font-size: 13px; opacity: 0.75; }
+  #legend {
+    position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.55); padding: 6px 14px; border-radius: 8px;
+    font-size: 12px; pointer-events: none; opacity: 0.85;
+    text-align: center; line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="520" height="720"></canvas>
+<div id="hud">Level <span id="lvl">1</span> · Height <span id="hgt">0</span>m · Moves <span id="mv">0</span> · Falls <span id="falls">0</span></div>
+<div id="legend">Click a glowing hold to move · SHIFT + click for a dyno (long jump)<br/>Jugs (round) rest · Crimps (flat) strain · 🍎 Fruit recovers pump · Fresher arms reach further<br/>Press R to give up</div>
+<div id="msg"></div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const hudLvl = document.getElementById('lvl');
+  const hudHgt = document.getElementById('hgt');
+  const hudFalls = document.getElementById('falls');
+  const hudMv = document.getElementById('mv');
+  const msgEl = document.getElementById('msg');
+
+  // ----- World state -----
+  let level = 1;
+  let totalFalls = 0;
+  let totalMoves = 0;
+  let levelMoves = 0;
+  let pump = 0;          // current forearm pump
+  let pumpMax = 30;      // pump capacity for this level
+  let holds = [];        // {x, y, kind, onRoute, r}
+  let wallHeight = 0;    // pixels
+  let topY = 0;          // y of top in world coords (lower = higher)
+  let cameraY = 0;       // world y at top of screen
+  let player;            // climber
+  let pendingMove = null;// {hold, dyno, t}
+  let starsField = [];   // background granite speckles (in screen coords)
+  let crackLines = [];   // wall cracks per level (world coords)
+  let levelMessage = '';
+  let messageTimer = 0;
+  let gameState = 'playing'; // 'playing' | 'falling' | 'won'
+
+  const REACH = 130;     // max distance for a normal move between hold positions
+  const DYNO_REACH = 220;// dyno distance
+  const DYNO_FAIL_CHANCE = 0.35;
+
+  // ----- Utilities -----
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const dist = (ax, ay, bx, by) => Math.hypot(ax-bx, ay-by);
+
+  // Seedable RNG so each level is reproducible-ish per session
+  function mulberry32(seed) {
+    return function() {
+      let t = seed += 0x6D2B79F5;
+      t = Math.imul(t ^ t >>> 15, t | 1);
+      t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+
+  // ----- Level generation -----
+  function buildLevel(lv) {
+    const rng = mulberry32(lv * 9173 + 17);
+    const rr = (a, b) => a + rng() * (b - a);
+
+    // Wall gets taller per level
+    wallHeight = 1400 + lv * 350;
+    topY = -wallHeight; // climber starts at y=0 (ground), climbs into negative y
+    holds = [];
+
+    // Generate the "true route" — a chain of holds from bottom to top.
+    // Then sprinkle distractor holds.
+    const startX = W / 2;
+    let cx = startX, cy = 40; // start a bit above ground
+    const routePath = [{ x: cx, y: cy, onRoute: true }];
+
+    // Step distance grows slightly with level; gaps get bigger requiring dynos
+    const baseStep = 90 - Math.min(lv * 2, 30);
+    const dynoChance = Math.min(0.08 + lv * 0.025, 0.35);
+
+    while (cy > topY + 80) {
+      const dyno = rng() < dynoChance;
+      const stepUp = dyno ? rr(150, 200) : rr(baseStep - 10, baseStep + 25);
+      const stepX = rr(-90, 90);
+      cx = Math.max(60, Math.min(W - 60, cx + stepX));
+      cy -= stepUp;
+      routePath.push({ x: cx, y: cy, onRoute: true, dyno });
+    }
+    // Force last hold near top center as the "summit"
+    const summit = { x: W/2 + rr(-60, 60), y: topY + 30, onRoute: true, summit: true };
+    routePath.push(summit);
+
+    routePath.forEach(p => holds.push({
+      x: p.x, y: p.y,
+      onRoute: true,
+      summit: !!p.summit,
+      kind: p.summit ? 'jug' : (rng() < 0.4 ? 'jug' : (rng() < 0.7 ? 'edge' : 'crimp')),
+      r: p.summit ? 16 : 11,
+    }));
+
+    // Pump budget — enough to climb the route with ~50% headroom for exploration
+    pumpMax = Math.ceil(routePath.length * 1.5) + 4;
+    pump = 0;
+    levelMoves = 0;
+
+    // Distractor holds — make navigation maze-like
+    const distractors = 30 + lv * 8;
+    for (let i = 0; i < distractors; i++) {
+      const y = rr(topY + 40, -20);
+      const x = rr(40, W - 40);
+      // Avoid placing right on top of route holds
+      let tooClose = false;
+      for (const h of holds) {
+        if (dist(h.x, h.y, x, y) < 30) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+      holds.push({
+        x, y, onRoute: false, summit: false,
+        kind: rng() < 0.5 ? 'edge' : (rng() < 0.7 ? 'crimp' : 'sloper'),
+        r: 9 + rng() * 3,
+      });
+    }
+
+    // Wall cracks (decorative)
+    crackLines = [];
+    const numCracks = 4 + Math.floor(rng() * 4);
+    for (let i = 0; i < numCracks; i++) {
+      const startX = rr(20, W - 20);
+      const segs = [];
+      let x = startX, y = rr(topY, 0);
+      const len = rr(120, 400);
+      const endY = Math.max(topY, y - len);
+      while (y > endY) {
+        segs.push({ x, y });
+        y -= rr(15, 35);
+        x += rr(-10, 10);
+      }
+      crackLines.push(segs);
+    }
+
+    // Sprinkle fruit on some holds — eat them to recover pump.
+    // Scale lightly with level so longer pitches still have rest options.
+    const fruitTarget = 3 + Math.floor(rng() * 3) + Math.floor(lv / 2);
+    const fruitCandidates = holds.filter(h => !h.summit);
+    for (let i = fruitCandidates.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [fruitCandidates[i], fruitCandidates[j]] = [fruitCandidates[j], fruitCandidates[i]];
+    }
+    for (let i = 0; i < Math.min(fruitTarget, fruitCandidates.length); i++) {
+      fruitCandidates[i].fruit = true;
+    }
+
+    // Background speckle field — fixed in screen space, regenerate each level
+    starsField = [];
+    for (let i = 0; i < 600; i++) {
+      starsField.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        shade: 60 + Math.random() * 80,
+        size: Math.random() < 0.85 ? 1 : 2,
+      });
+    }
+
+    // Player starts at the bottom hold
+    const start = holds.find(h => h.onRoute && Math.abs(h.y - 40) < 50) || holds[0];
+    player = {
+      x: start.x,
+      y: start.y,
+      hold: start,
+      armPhase: 0,
+    };
+    cameraY = player.y - H * 0.7;
+    pendingMove = null;
+    gameState = 'playing';
+    showMessage(`Level ${lv} — find a route to the top`, 1800);
+    updateHUD();
+  }
+
+  // ----- Rendering -----
+  function drawSkyAndWall() {
+    // Sky gradient at the very top of the wall (visible only when camera near summit)
+    const skyTopOnScreen = topY - cameraY;
+    if (skyTopOnScreen > -50) {
+      const grad = ctx.createLinearGradient(0, Math.max(0, skyTopOnScreen - 200), 0, skyTopOnScreen + 80);
+      grad.addColorStop(0, '#cfe3f0');
+      grad.addColorStop(1, '#f3d9a8');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, W, Math.max(0, skyTopOnScreen));
+    }
+    // Granite wall fill below the sky line
+    const wallStart = Math.max(0, topY - cameraY);
+    const grad = ctx.createLinearGradient(0, 0, W, H);
+    grad.addColorStop(0, '#9a8e7e');
+    grad.addColorStop(0.5, '#7e7263');
+    grad.addColorStop(1, '#6b5f50');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, wallStart, W, H - wallStart);
+
+    // Speckle texture (screen-fixed, gives subtle parallax feel)
+    for (const s of starsField) {
+      if (s.y < wallStart) continue;
+      ctx.fillStyle = `rgb(${s.shade},${s.shade-8},${s.shade-20})`;
+      ctx.fillRect(s.x, s.y, s.size, s.size);
+    }
+
+    // Cracks (in world coords)
+    ctx.strokeStyle = 'rgba(40,30,20,0.55)';
+    ctx.lineWidth = 1.6;
+    for (const crack of crackLines) {
+      ctx.beginPath();
+      let started = false;
+      for (const seg of crack) {
+        const sy = seg.y - cameraY;
+        if (sy < -20 || sy > H + 20) { started = false; continue; }
+        if (!started) { ctx.moveTo(seg.x, sy); started = true; }
+        else ctx.lineTo(seg.x, sy);
+      }
+      ctx.stroke();
+    }
+
+    // Ground line — only visible when low
+    const groundY = 0 - cameraY;
+    if (groundY > -10 && groundY < H + 50) {
+      ctx.fillStyle = '#3b2a18';
+      ctx.fillRect(0, groundY, W, H - groundY);
+      ctx.fillStyle = '#5a4226';
+      for (let i = 0; i < W; i += 6) {
+        const h = 2 + Math.sin(i * 0.3) * 1.5;
+        ctx.fillRect(i, groundY - h, 4, h);
+      }
+    }
+  }
+
+  function drawHold(h) {
+    const sy = h.y - cameraY;
+    if (sy < -20 || sy > H + 20) return;
+    const reachable = canReach(h) && h !== player.hold;
+    const dynoable = !canReach(h) && canDyno(h) && h !== player.hold;
+
+    // Shadow under hold to give depth
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(h.x + 2, sy + h.r * 0.6, h.r * 1.1, h.r * 0.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Hold body — color by route status
+    let body, edge;
+    if (h.summit) { body = '#ffd966'; edge = '#a87a1c'; }
+    else if (h.onRoute) { body = '#d94e4e'; edge = '#7a1f1f'; }
+    else { body = '#5e5648'; edge = '#3a342a'; }
+
+    ctx.fillStyle = body;
+    ctx.strokeStyle = edge;
+    ctx.lineWidth = 1.5;
+
+    // Different hold shapes by kind
+    ctx.beginPath();
+    if (h.kind === 'jug') {
+      ctx.arc(h.x, sy, h.r, 0, Math.PI * 2);
+    } else if (h.kind === 'edge') {
+      ctx.ellipse(h.x, sy, h.r * 1.3, h.r * 0.6, 0, 0, Math.PI * 2);
+    } else if (h.kind === 'crimp') {
+      ctx.rect(h.x - h.r, sy - h.r * 0.4, h.r * 2, h.r * 0.8);
+    } else { // sloper
+      ctx.ellipse(h.x, sy, h.r * 1.2, h.r * 0.9, 0, 0, Math.PI * 2);
+    }
+    ctx.fill();
+    ctx.stroke();
+
+    // Highlight ring for reachable / dynoable holds
+    if (reachable) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(h.x, sy, h.r + 5 + Math.sin(performance.now()/200) * 1.5, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (dynoable) {
+      ctx.strokeStyle = 'rgba(120,200,255,0.85)';
+      ctx.setLineDash([4, 3]);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(h.x, sy, h.r + 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    if (h.summit) {
+      ctx.fillStyle = '#fff7c2';
+      ctx.font = 'bold 11px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('SUMMIT', h.x, sy - h.r - 6);
+    }
+
+    if (h.fruit) {
+      const fy = sy - h.r - 6 + Math.sin(performance.now() / 400 + h.x) * 1;
+      // Soft glow so fruit reads at a glance
+      ctx.fillStyle = 'rgba(255,200,100,0.25)';
+      ctx.beginPath();
+      ctx.arc(h.x, fy, 8, 0, Math.PI * 2);
+      ctx.fill();
+      // Apple body
+      ctx.fillStyle = '#d63a3a';
+      ctx.strokeStyle = '#6b1414';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(h.x, fy, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      // Stem
+      ctx.strokeStyle = '#5b3a1a';
+      ctx.beginPath();
+      ctx.moveTo(h.x, fy - 3);
+      ctx.lineTo(h.x + 1, fy - 6);
+      ctx.stroke();
+      // Leaf
+      ctx.fillStyle = '#3aa040';
+      ctx.beginPath();
+      ctx.ellipse(h.x + 3, fy - 5, 2.2, 1.2, -0.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Fruit-eaten visual effect — a quick burst of bits at the hold.
+  let fruitPops = []; // {x, y, t, life, parts:[{vx,vy}]}
+  function spawnFruitPop(h) {
+    const parts = [];
+    for (let i = 0; i < 8; i++) {
+      const ang = (Math.PI * 2 * i) / 8 + Math.random() * 0.4;
+      const sp = 0.12 + Math.random() * 0.08;
+      parts.push({ vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp - 0.1 });
+    }
+    fruitPops.push({ x: h.x, y: h.y, t: 0, life: 600, parts });
+  }
+  function drawFruitPops(dt) {
+    for (let i = fruitPops.length - 1; i >= 0; i--) {
+      const fp = fruitPops[i];
+      fp.t += dt;
+      const p = fp.t / fp.life;
+      if (p >= 1) { fruitPops.splice(i, 1); continue; }
+      const sy = fp.y - cameraY;
+      ctx.fillStyle = `rgba(214,58,58,${1 - p})`;
+      for (const part of fp.parts) {
+        ctx.beginPath();
+        ctx.arc(fp.x + part.vx * fp.t, sy + part.vy * fp.t + 0.0006 * fp.t * fp.t, 2 * (1 - p) + 0.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  function drawClimber() {
+    const sy = player.y - cameraY;
+    const sx = player.x;
+    const t = performance.now() / 600;
+
+    // Body — small stick figure with rope
+    ctx.strokeStyle = '#1a1410';
+    ctx.lineWidth = 2.2;
+    ctx.fillStyle = '#e8c98a';
+
+    // Rope trailing down (anchor below)
+    ctx.strokeStyle = 'rgba(220,180,90,0.8)';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    let ry = sy;
+    let rx = sx;
+    while (ry < H) {
+      ry += 12;
+      rx += Math.sin(ry * 0.05 + t) * 2;
+      ctx.lineTo(rx, ry);
+    }
+    ctx.stroke();
+
+    // Torso
+    ctx.strokeStyle = '#1a1410';
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy - 4);
+    ctx.lineTo(sx, sy - 18);
+    ctx.stroke();
+
+    // Head
+    ctx.fillStyle = '#e8c98a';
+    ctx.beginPath();
+    ctx.arc(sx, sy - 24, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#1a1410';
+    ctx.stroke();
+
+    // Helmet
+    ctx.fillStyle = '#c44';
+    ctx.beginPath();
+    ctx.arc(sx, sy - 25, 7, Math.PI, 0);
+    ctx.fill();
+    ctx.stroke();
+
+    // Arms reaching up toward upcoming move
+    const reach = pendingMove ? pendingMove.hold : null;
+    let armTargetX = sx, armTargetY = sy - 32;
+    if (reach) {
+      armTargetX = reach.x;
+      armTargetY = reach.y - cameraY;
+    }
+    ctx.strokeStyle = '#1a1410';
+    ctx.beginPath();
+    ctx.moveTo(sx - 4, sy - 14);
+    ctx.lineTo((sx - 4 + armTargetX) / 2 - 4, (sy - 14 + armTargetY) / 2);
+    ctx.lineTo(armTargetX - 3, armTargetY);
+    ctx.moveTo(sx + 4, sy - 14);
+    ctx.lineTo((sx + 4 + armTargetX) / 2 + 4, (sy - 14 + armTargetY) / 2);
+    ctx.lineTo(armTargetX + 3, armTargetY);
+    ctx.stroke();
+
+    // Legs
+    ctx.beginPath();
+    ctx.moveTo(sx, sy - 4);
+    ctx.lineTo(sx - 6, sy + 10 + Math.sin(t*2) * 1);
+    ctx.moveTo(sx, sy - 4);
+    ctx.lineTo(sx + 6, sy + 10 + Math.cos(t*2) * 1);
+    ctx.stroke();
+  }
+
+  function drawPumpBar() {
+    const pad = 14, barW = 16, barH = 220;
+    const x = pad, y = H - pad - barH;
+    // Frame
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(x - 3, y - 18, barW + 6, barH + 24);
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x - 3, y - 18, barW + 6, barH + 24);
+    // Fill
+    const ratio = Math.min(1, pump / pumpMax);
+    const fillH = Math.round(barH * ratio);
+    // Color shifts green → yellow → red
+    let r, g, b;
+    if (ratio < 0.5) { r = Math.round(80 + ratio * 2 * 175); g = 200; b = 80; }
+    else { r = 240; g = Math.round(200 - (ratio - 0.5) * 2 * 180); b = 60; }
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    ctx.fillRect(x, y + (barH - fillH), barW, fillH);
+    // Tick marks
+    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+    for (let i = 1; i < 4; i++) {
+      const ty = y + barH * (i / 4);
+      ctx.beginPath(); ctx.moveTo(x, ty); ctx.lineTo(x + barW, ty); ctx.stroke();
+    }
+    // Label
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('PUMP', x + barW / 2, y - 6);
+    ctx.font = '10px sans-serif';
+    ctx.fillText(`${pump}/${pumpMax}`, x + barW / 2, y + barH + 12);
+  }
+
+  function draw(dt) {
+    drawSkyAndWall();
+    for (const h of holds) drawHold(h);
+    drawFruitPops(dt);
+    drawClimber();
+    drawPumpBar();
+
+    // Falling overlay
+    if (gameState === 'falling') {
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    // Level message
+    if (messageTimer > 0) {
+      ctx.fillStyle = 'rgba(0,0,0,0.65)';
+      ctx.fillRect(W/2 - 160, 30, 320, 36);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 16px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(levelMessage, W/2, 54);
+    }
+  }
+
+  // ----- Game logic -----
+  // Pumped forearms shake — long moves get shorter and less reliable.
+  function pumpRatio() {
+    return pumpMax > 0 ? Math.min(1, pump / pumpMax) : 0;
+  }
+  function currentDynoReach() {
+    // Fresh climber stretches further: 1.15x at pump 0, 0.92x when fully pumped.
+    return DYNO_REACH * (1.15 - 0.23 * pumpRatio());
+  }
+  function currentDynoFail() {
+    // Fresh: ~8% fail. Fully pumped: ~62% fail.
+    return 0.08 + 0.54 * pumpRatio();
+  }
+
+  function canReach(h) {
+    return dist(h.x, h.y, player.hold.x, player.hold.y) <= REACH && h.y < player.hold.y + 40;
+  }
+  function canDyno(h) {
+    const d = dist(h.x, h.y, player.hold.x, player.hold.y);
+    return d > REACH && d <= currentDynoReach() && h.y < player.hold.y;
+  }
+
+  function attemptMove(h, isDyno) {
+    if (gameState !== 'playing' || pendingMove) return;
+    if (h === player.hold) return;
+    // If within normal reach, always treat as a regular move (no risk).
+    if (canReach(h)) {
+      isDyno = false;
+    } else {
+      if (!isDyno) return;       // out of reach without a dyno
+      if (!canDyno(h)) return;   // too far even to dyno
+    }
+
+    pendingMove = {
+      hold: h,
+      dyno: isDyno,
+      t: 0,
+      dur: isDyno ? 380 : 260,
+      fromX: player.x, fromY: player.y,
+      // Resolve dyno success/failure now — pumped forearms make the long throws sketchier.
+      willFail: isDyno && Math.random() < currentDynoFail(),
+    };
+  }
+
+  function update(dt) {
+    if (pendingMove) {
+      pendingMove.t += dt;
+      const p = Math.min(1, pendingMove.t / pendingMove.dur);
+      const eased = pendingMove.dyno
+        ? p * p * (3 - 2 * p) // smoothstep
+        : p;
+      const tx = pendingMove.willFail ? (pendingMove.fromX + pendingMove.hold.x) / 2 : pendingMove.hold.x;
+      const ty = pendingMove.willFail ? (pendingMove.fromY + pendingMove.hold.y) / 2 - 30 : pendingMove.hold.y;
+      // Arc for dyno
+      const arcLift = pendingMove.dyno ? Math.sin(p * Math.PI) * 18 : 0;
+      player.x = pendingMove.fromX + (tx - pendingMove.fromX) * eased;
+      player.y = pendingMove.fromY + (ty - pendingMove.fromY) * eased - arcLift;
+
+      if (p >= 1) {
+        if (pendingMove.willFail) {
+          startFall('You missed the dyno!');
+        } else {
+          const landed = pendingMove.hold;
+          const wasDyno = pendingMove.dyno;
+          player.hold = landed;
+          player.x = landed.x;
+          player.y = landed.y;
+          pendingMove = null;
+
+          // Pump cost: each move tires forearms; hold kind modulates it.
+          let cost = wasDyno ? 2 : 1;
+          if (landed.kind === 'crimp') cost += 1;       // strenuous
+          if (landed.kind === 'jug')   cost -= 2;       // rest hold
+          pump = Math.max(0, pump + cost);
+
+          // Eat any fruit on this hold for a big pump recovery.
+          if (landed.fruit) {
+            landed.fruit = false;
+            pump = Math.max(0, pump - 6);
+            spawnFruitPop(landed);
+            showMessage('Ate fruit — recovered!', 1100);
+          }
+
+          totalMoves++;
+          levelMoves++;
+
+          if (landed.summit) {
+            winLevel();
+          } else if (pump >= pumpMax) {
+            startFall('Pumped out! Forearms gave way.');
+          }
+        }
+      }
+    }
+
+    if (gameState === 'falling') {
+      // Drop until off screen, then reset
+      player.y += dt * 0.9;
+      player.x += Math.sin(player.y * 0.02) * 0.4;
+      const groundWorldY = 60;
+      if (player.y > groundWorldY) {
+        player.y = groundWorldY;
+        // After short pause, restart at bottom
+        setTimeout(resetToBottom, 600);
+        gameState = 'fallen';
+      }
+    }
+
+    // Smooth camera follow
+    const targetCam = player.y - H * 0.65;
+    cameraY += (targetCam - cameraY) * Math.min(1, dt * 0.005);
+
+    // Clamp camera so we don't show too far above the summit / below the ground
+    const camMin = topY - 60;
+    const camMax = 80 - H * 0.3;
+    if (cameraY < camMin) cameraY = camMin;
+    if (cameraY > camMax) cameraY = camMax;
+
+    if (messageTimer > 0) messageTimer -= dt;
+    updateHUD();
+  }
+
+  function startFall(reason) {
+    if (gameState !== 'playing') return;
+    gameState = 'falling';
+    pendingMove = null;
+    totalFalls++;
+    showMessage(reason || 'You fell!', 1600);
+  }
+
+  function resetToBottom() {
+    if (gameState === 'won') return;
+    const start = holds.find(h => h.onRoute && Math.abs(h.y - 40) < 50) || holds[0];
+    player.hold = start;
+    player.x = start.x;
+    player.y = start.y;
+    pendingMove = null;
+    pump = 0;
+    gameState = 'playing';
+  }
+
+  function winLevel() {
+    gameState = 'won';
+    showBig(`Level ${level} complete!`, 'Click to start the next pitch');
+    canvas.addEventListener('click', nextLevelOnce, { once: true });
+  }
+
+  function nextLevelOnce() {
+    hideBig();
+    level++;
+    buildLevel(level);
+  }
+
+  function showMessage(text, ms) {
+    levelMessage = text;
+    messageTimer = ms;
+  }
+  function showBig(text, sub) {
+    msgEl.innerHTML = text + (sub ? `<small>${sub}</small>` : '');
+    msgEl.style.display = 'block';
+  }
+  function hideBig() {
+    msgEl.style.display = 'none';
+  }
+
+  function updateHUD() {
+    hudLvl.textContent = level;
+    const meters = Math.max(0, Math.round((-player.y) / 14));
+    hudHgt.textContent = meters;
+    hudFalls.textContent = totalFalls;
+    hudMv.textContent = `${levelMoves} (${totalMoves})`;
+  }
+
+  // ----- Input -----
+  window.addEventListener('keydown', (e) => {
+    if ((e.key === 'r' || e.key === 'R') && gameState === 'playing') {
+      startFall('You let go.');
+    }
+  });
+
+  canvas.addEventListener('click', (e) => {
+    if (gameState !== 'playing') return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * (W / rect.width);
+    const my = (e.clientY - rect.top) * (H / rect.height);
+    const wy = my + cameraY;
+    // Find closest hold within click radius
+    let best = null, bestD = 25;
+    for (const h of holds) {
+      const d = dist(h.x, h.y, mx, wy);
+      if (d < bestD + h.r) { best = h; bestD = d; }
+    }
+    if (!best) return;
+    const isDyno = e.shiftKey;
+    attemptMove(best, isDyno);
+  });
+
+  // ----- Main loop -----
+  let last = performance.now();
+  function loop(now) {
+    const dt = Math.min(50, now - last);
+    last = now;
+    update(dt);
+    draw(dt);
+    requestAnimationFrame(loop);
+  }
+
+  buildLevel(level);
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
