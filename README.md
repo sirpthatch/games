@@ -21,7 +21,7 @@ then it's on to the next climb. Built with Phaser 3.
 
 **Controls:** Arrow keys / WASD to move · Up to climb ladders & grab bars · Space to jump
 
-![Climbing Gym](screenshots/climber.png)
+[![Climbing Gym](screenshots/climber.png)](./climber/)
 
 ---
 
@@ -35,7 +35,7 @@ tense.
 
 **Controls:** Arrow keys / WASD to move · P to pause · R to restart level
 
-![Field Hunter](screenshots/field_hunter.png)
+[![Field Hunter](screenshots/field_hunter.png)](./field_hunter/)
 
 ---
 
@@ -49,7 +49,7 @@ is saved so there is always a score to beat.
 
 **Controls:** Left / Right (or A / D) to move · Up / W to climb faster · Down / S to slow
 
-![Pip the Brass-Hearted](screenshots/monkey_crawler.png)
+[![Pip the Brass-Hearted](screenshots/monkey_crawler.png)](./monkey_crawler/)
 
 ---
 
@@ -63,7 +63,7 @@ hidden image, piece by piece.
 
 **Controls:** Arrow keys to move · Up / Space to jump · Down to climb down · X to shoot laser · R to restart level
 
-![Puzzle Hunter](screenshots/puzzle_hunter.png)
+[![Puzzle Hunter](screenshots/puzzle_hunter.png)](./puzzle_hunter/)
 
 ---
 
@@ -78,4 +78,4 @@ many times and the level resets. Complete the route to unlock the next level.
 
 **Controls:** Click a glowing hold to move · Shift + click for a dyno · R to give up
 
-![Big Wall](screenshots/big_wall.png)
+[![Big Wall](screenshots/big_wall.png)](./big_wall)
